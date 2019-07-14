@@ -1,0 +1,253 @@
+---
+- name: Create a custom ISO for ESXi
+  hosts: localhost
+  gather_facts: no
+  vars_files:
+    - vars/default.yml
+  tasks:
+    - name: Set vm name.
+      block:
+        - set_fact: vm_name="{{ 1000 | random | to_uuid | upper }}"
+        - set_fact: vm_name="{{ vm_name[0:13] }}"
+
+    - name: Clone vm.
+      vmware_guest:
+        hostname: "{{ hostname }}"
+        username: "{{ username }}"
+        password: "{{ password }}"
+        validate_certs: no
+        esxi_hostname: "{{ esxi_hostname }}"
+        datacenter: "{{ datacenter }}"
+        folder: "{{ folder }}"
+        template: "{{ template }}"
+        name: "{{ vm_name }}"
+        hardware:
+          num_cpus: 2
+          num_cpu_cores_per_socket: 1
+          memory_mb: 4096
+        networks:
+          - name: VM Network
+        datastore: "{{ datastore }}"
+        state: poweredon
+
+    - name: Wait vmware tools.
+      vmware_guest_tools_wait:
+        hostname: "{{ hostname }}"
+        username: "{{ username }}"
+        password: "{{ password }}"
+        validate_certs: no
+        folder: "{{ folder }}"
+        name: "{{ vm_name }}"
+
+    - name: Wait until get an IP.
+      vmware_guest_facts:
+        hostname: "{{ hostname }}"
+        username: "{{ username }}"
+        password: "{{ password }}"
+        validate_certs: no
+        datacenter: "{{ datacenter }}"
+        folder: "{{ folder }}"
+        name: "{{ vm_name }}"
+      register: vmware_guest_facts_result
+      until: vmware_guest_facts_result.instance.ipv4 is defined and vmware_guest_facts_result.instance.ipv4 | string | search(search_ip)
+      retries: 60
+      delay: 5
+
+    - name: Generate init script.
+      template:
+        src: templates/init.j2
+        dest: init.ps1
+
+    - name: Copy init script to guest.
+      vmware_guest_file_operation:
+        hostname: "{{ hostname }}"
+        username: "{{ username }}"
+        password: "{{ password }}"
+        validate_certs: no
+        datacenter: "{{ datacenter }}"
+        folder: "{{ folder }}"
+        vm_id: "{{ vm_name }}"
+        vm_username: "{{ vm_username }}"
+        vm_password: "{{ vm_password }}"
+        copy:
+          src: init.ps1
+          dest: "{{ windows_save_path }}\\init.ps1"
+
+    - name: Wait for powershell to be executable.
+      vmware_vm_shell:
+        hostname: "{{ hostname }}"
+        username: "{{ username }}"
+        password: "{{ password }}"
+        validate_certs: no
+        datacenter: "{{ datacenter }}"
+        folder: "{{ folder }}"
+        vm_id: "{{ vm_name }}"
+        vm_username: "{{ vm_username }}"
+        vm_password: "{{ vm_password }}"
+        vm_shell: "{{ powershell_absolute_path }}"
+        vm_shell_args: "-File init.ps1"
+        vm_shell_cwd: "{{ windows_save_path }}"
+
+    - name: Git clone Ansible VMware Windows WinRM setup.
+      git:
+        repo: https://github.com/sky-joker/ansible-vmware-windows-winrm-setup.git
+        dest: ansible-vmware-windows-winrm-setup
+
+    - name: Git clone vmware-guest-file-operation.
+      git:
+        repo: https://github.com/sky-joker/vmware-guest-file-operation.git
+        dest: vmware-guest-file-operation
+
+    - name: Install vmware-guest-file-operation requirements.
+      pip:
+        requirements: vmware-guest-file-operation/requirements.txt
+        chdir: "{{ playbook_dir }}"
+
+    - name: Copy vmware-guest-file-operation to ansible-vmware-windows-winrm-setup directory.
+      file:
+        src: "{{ playbook_dir }}/vmware-guest-file-operation/vmware-guest-file-operation.py"
+        dest: "{{ playbook_dir }}/ansible-vmware-windows-winrm-setup/vmware-guest-file-operation.py"
+        mode: 0755
+        state: hard
+
+    - name: Generate vmware_parameters.
+      template:
+        src: templates/vmware_parameters.j2
+        dest: ansible-vmware-windows-winrm-setup/vars/vmware_parameters.yml
+
+    - name: Generate certificate_parameters.
+      template:
+        src: templates/certificate_parameters.j2
+        dest: ansible-vmware-windows-winrm-setup/vars/certificate_parameters.yml
+
+    - name: Wait vmware tools.
+      vmware_guest_tools_wait:
+        hostname: "{{ hostname }}"
+        username: "{{ username }}"
+        password: "{{ password }}"
+        validate_certs: no
+        folder: "{{ folder }}"
+        name: "{{ vm_name }}"
+
+    - name: Gather facts from a guest using name.
+      vmware_guest_facts:
+        hostname: "{{ hostname }}"
+        username: "{{ username }}"
+        password: "{{ password }}"
+        validate_certs: no
+        datacenter: "{{ datacenter }}"
+        folder: "{{ folder }}"
+        name: "{{ vm_name }}"
+      register: vmware_guest_facts_result
+      until: vmware_guest_facts_result.instance.ipv4 is defined and vmware_guest_facts_result.instance.ipv4 | string | search(search_ip)
+      retries: 60
+      delay: 5
+
+    - name: Set ipv4 of guest to vm_ip variable.
+      set_fact:
+        vm_ip: "{{ vmware_guest_facts_result.instance.ipv4 }}"
+
+    - name: Generate inventory.
+      template:
+        src: templates/inventory.j2
+        dest: ansible-vmware-windows-winrm-setup/inventory
+
+    - name: Wait for powershell to be executable.
+      vmware_vm_shell:
+        hostname: "{{ hostname }}"
+        username: "{{ username }}"
+        password: "{{ password }}"
+        validate_certs: no
+        datacenter: "{{ datacenter }}"
+        folder: "{{ folder }}"
+        vm_id: "{{ vm_name }}"
+        vm_username: "{{ vm_username }}"
+        vm_password: "{{ vm_password }}"
+        vm_shell: "{{ powershell_absolute_path }}"
+        vm_shell_args: "-Command \"ls\""
+        wait_for_process: yes
+      register: powershell_exec_result
+      until: powershell_exec_result.exit_code is defined and powershell_exec_result.exit_code == 0
+      retries: 60
+      delay: 5
+
+    - name: Enable HTTPS WinRM.
+      command: ansible-playbook -i inventory main.yml
+      args:
+        chdir: "{{ playbook_dir }}/ansible-vmware-windows-winrm-setup/"
+
+    - name: Add host to inventory.
+      add_host:
+        name: "{{ vm_name }}"
+        ansible_host: "{{ vm_ip }}"
+        ansible_user: "{{ vm_username }}"
+        ansible_password: "{{ vm_password }}"
+        ansible_connection: winrm
+        ansible_winrm_transport: ntlm
+        ansible_port: 5986
+        ansible_winrm_server_cert_validation: ignore
+        groups:
+          - windows
+
+    - name: Install packageprovider NuGet.
+      win_shell: Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force
+      delegate_to: "{{ vm_name }}"
+
+    - name: Install VMware PowerCLI module.
+      win_psmodule:
+        name: VMware.PowerCLI
+        state: present
+      delegate_to: "{{ vm_name }}"
+
+    - name: Download ESXi customizer script.
+      win_shell: "Invoke-WebRequest -Uri {{ esxi_customizer_url }} -OutFile ESXi-Customizer.ps1"
+      args: 
+        chdir: "{{ windows_save_path }}"
+      delegate_to: "{{ vm_name }}"
+
+    - name: Create of Custom ISO.
+      win_shell: |
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        .\\ESXi-Customizer.ps1 {{ esxi_customizer_option }}
+      args:
+        chdir: "{{ windows_save_path }}"
+      delegate_to: "{{ vm_name }}"
+
+    - name: Get ISO file name.
+      win_shell: Get-ChildItem | Select Name | Findstr iso
+      args:
+        chdir: "{{ windows_save_path }}"
+      register: iso_file_name_result
+      delegate_to: "{{ vm_name }}"
+
+    - name: iso file name.
+      set_fact: custom_iso_file_name="{{ iso_file_name_result.stdout_lines.0 }}"
+
+    - name: Download Custom ISO.
+      vmware_guest_file_operation:
+        hostname: "{{ hostname }}"
+        username: "{{ username }}"
+        password: "{{ password }}"
+        validate_certs: no
+        datacenter: "{{ datacenter }}"
+        folder: "{{ folder }}"
+        vm_id: "{{ vm_name }}"
+        vm_username: "{{ vm_username }}"
+        vm_password: "{{ vm_password }}"
+        fetch:
+          src: "{{ windows_save_path }}\\{{ custom_iso_file_name }}"
+          dest: "{{ custom_iso_file_name }}"
+
+    - name: Stop and Delete of vm.
+      vmware_guest:
+        hostname: "{{ hostname }}"
+        username: "{{ username }}"
+        password: "{{ password }}"
+        validate_certs: no
+        datacenter: "{{ datacenter }}"
+        folder: "{{ folder }}"
+        name: "{{ vm_name }}"
+        state: "{{ item }}"
+      loop:
+        - poweredoff
+        - absent

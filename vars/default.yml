@@ -1,0 +1,21 @@
+---
+# vmware
+hostname: vCenter IP
+username: administrator@vsphere.local
+password: secret
+datacenter: DC
+esxi_hostname: esxi-08.local
+folder: "{{ datacenter }}/vm"
+template: Windows2016_TMP
+datastore: datastore1
+search_ip: 192.168.0
+
+# windows
+windows_save_path: C:\Users\Administrator\Desktop
+powershell_absolute_path: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
+esxi_customizer_url: http://vibsdepot.v-front.de/tools/ESXi-Customizer-PS-v2.6.0.ps1
+esxi_customizer_option: -v67 -load ne1000
+
+# guest
+vm_username: administrator
+vm_password: secret
