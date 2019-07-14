@@ -102,6 +102,14 @@
       pip:
         requirements: vmware-guest-file-operation/requirements.txt
         chdir: "{{ playbook_dir }}"
+      when: venv_path is not defined
+
+    - name: Install vmware-guest-file-operation requirements.
+      pip:
+        requirements: vmware-guest-file-operation/requirements.txt
+        chdir: "{{ playbook_dir }}"
+        virtualenv: "{{ venv_path }}"
+      when: venv_path is defined
 
     - name: Copy vmware-guest-file-operation to ansible-vmware-windows-winrm-setup directory.
       file:

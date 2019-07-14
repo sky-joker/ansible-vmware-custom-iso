@@ -19,3 +19,6 @@ esxi_customizer_option: -v67 -load ne1000
 # guest
 vm_username: administrator
 vm_password: secret
+
+# venv path
+# venv_path: /venv/path
